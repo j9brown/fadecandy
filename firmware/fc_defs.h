@@ -27,7 +27,7 @@
 
 #pragma once
 
-#define LED_STRIPS              6
+#define LED_STRIPS              5
 #define LEDS_PER_STRIP          120
 #define LEDS_TOTAL              (LEDS_PER_STRIP * LED_STRIPS)
 #define CHANNELS_TOTAL          (LEDS_TOTAL * 3)

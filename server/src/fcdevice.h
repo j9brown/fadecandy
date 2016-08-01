@@ -44,7 +44,7 @@ public:
     virtual void flush();
     virtual void describe(rapidjson::Value &object, Allocator &alloc);
 
-    static const unsigned NUM_PIXELS = 720;
+    static const unsigned NUM_PIXELS = 5 * 120;
 
     // Send current buffer contents
     void writeFramebuffer();
