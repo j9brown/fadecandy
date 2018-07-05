@@ -38,8 +38,8 @@
 #define MAP_P1 1
 #define MAP_P2 2
 #define MAP_P3 3
-#define MAP_P4 4
-#define MAP_P5 5
+#define MAP_P4 5
+#define MAP_P5 4
 #define MAP_P6 6
 #define MAP_P7 7
 
