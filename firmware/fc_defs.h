@@ -32,6 +32,17 @@
 #define LEDS_TOTAL              (LEDS_PER_STRIP * LED_STRIPS)
 #define CHANNELS_TOTAL          (LEDS_TOTAL * 3)
 
+// Strip mapping to physical port.
+// Useful for mapping around dead or miswired ports.
+#define MAP_P0 0
+#define MAP_P1 1
+#define MAP_P2 2
+#define MAP_P3 3
+#define MAP_P4 4
+#define MAP_P5 5
+#define MAP_P6 6
+#define MAP_P7 7
+
 #define LUT_CH_SIZE             257
 #define LUT_TOTAL_SIZE          (LUT_CH_SIZE * 3)
 
