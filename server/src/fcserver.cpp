@@ -27,6 +27,7 @@
 #include "fcdevice.h"
 #include "version.h"
 #include "enttecdmxdevice.h"
+#include "glimmerdevice.h"
 #include <ctype.h>
 #include <iostream>
 
@@ -195,6 +196,9 @@ void FCServer::usbDeviceArrived(libusb_device *device)
 
     } else if (EnttecDMXDevice::probe(device)) {
         dev = new EnttecDMXDevice(device, mVerbose);
+
+    } else if (GlimmerDevice::probe(device)) {
+        dev = new GlimmerDevice(device, mVerbose);
 
     } else {
         return;

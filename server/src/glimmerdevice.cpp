@@ -1,5 +1,5 @@
 /*
- * Fadecandy device interface
+ * Fadecandy device interface for Glimmer firmware
  * 
  * Copyright (c) 2013 Micah Elizabeth Scott
  * 
@@ -21,7 +21,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "fcdevice.h"
+#include "glimmerdevice.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 #include "opc.h"
@@ -32,7 +32,7 @@
 #include <stdio.h>
 
 
-FCDevice::Transfer::Transfer(FCDevice *device, void *buffer, int length, PacketType type)
+GlimmerDevice::Transfer::Transfer(GlimmerDevice *device, void *buffer, int length, PacketType type)
     : transfer(libusb_alloc_transfer(0)),
       type(type), finished(false)
 {
@@ -45,10 +45,10 @@ FCDevice::Transfer::Transfer(FCDevice *device, void *buffer, int length, PacketT
     #endif
 
     libusb_fill_bulk_transfer(transfer, device->mHandle,
-        OUT_ENDPOINT, data, length, FCDevice::completeTransfer, this, 2000);
+        OUT_ENDPOINT, data, length, GlimmerDevice::completeTransfer, this, 2000);
 }
 
-FCDevice::Transfer::~Transfer()
+GlimmerDevice::Transfer::~Transfer()
 {
     libusb_free_transfer(transfer);
     #if NEED_COPY_USB_TRANSFER_BUFFER
@@ -56,32 +56,15 @@ FCDevice::Transfer::~Transfer()
     #endif
 }
 
-FCDevice::FCDevice(libusb_device *device, bool verbose)
-    : USBDevice(device, "fadecandy", verbose),
+GlimmerDevice::GlimmerDevice(libusb_device *device, bool verbose)
+    : USBDevice(device, "glimmer", verbose),
       mConfigMap(0), mNumFramesPending(0), mFrameWaitingForSubmit(false)
 {
     mSerialBuffer[0] = '\0';
     mSerialString = mSerialBuffer;
-
-    memset(&mFirmwareConfig, 0, sizeof mFirmwareConfig);
-    mFirmwareConfig.control = TYPE_CONFIG;
-
-    // Framebuffer headers
-    memset(mFramebuffer, 0, sizeof mFramebuffer);
-    for (unsigned i = 0; i < FRAMEBUFFER_PACKETS; ++i) {
-        mFramebuffer[i].control = TYPE_FRAMEBUFFER | i;
-    }
-    mFramebuffer[FRAMEBUFFER_PACKETS - 1].control |= FINAL;
-
-    // Color LUT headers
-    memset(mColorLUT, 0, sizeof mColorLUT);
-    for (unsigned i = 0; i < LUT_PACKETS; ++i) {
-        mColorLUT[i].control = TYPE_LUT | i;
-    }
-    mColorLUT[LUT_PACKETS - 1].control |= FINAL;
 }
 
-FCDevice::~FCDevice()
+GlimmerDevice::~GlimmerDevice()
 {
     /*
      * If we have pending transfers, cancel them.
@@ -95,7 +78,7 @@ FCDevice::~FCDevice()
     }
 }
 
-bool FCDevice::probe(libusb_device *device)
+bool GlimmerDevice::probe(libusb_device *device)
 {
     libusb_device_descriptor dd;
 
@@ -104,10 +87,10 @@ bool FCDevice::probe(libusb_device *device)
         return false;
     }
 
-    return dd.idVendor == 0x1d50 && dd.idProduct == 0x607a && dd.bcdDevice < 0x0390;
+    return dd.idVendor == 0x1d50 && dd.idProduct == 0x607a && dd.bcdDevice >= 0x0390;
 }
 
-int FCDevice::open()
+int GlimmerDevice::open()
 {
     int r = libusb_get_device_descriptor(mDevice, &mDD);
     if (r < 0) {
@@ -132,72 +115,13 @@ int FCDevice::open()
         (uint8_t*)mSerialBuffer, sizeof mSerialBuffer);
 }
 
-void FCDevice::loadConfiguration(const Value &config)
+void GlimmerDevice::completeTransfer(libusb_transfer *transfer)
 {
-    mConfigMap = findConfigMap(config);
-
-    // Initial firmware configuration from our device options
-    writeFirmwareConfiguration(config);
-}
-
-void FCDevice::writeFirmwareConfiguration(const Value &config)
-{
-    /*
-     * Send a device configuration settings packet, using values based on a JSON
-     * configuration.
-     */
-
-    if (!config.IsObject()) {
-        std::clog << "Firmware configuration is not a JSON object\n";
-        return;
-    }        
-
-    const Value &led = config["led"];
-    const Value &dither = config["dither"];
-    const Value &interpolate = config["interpolate"];
-
-    if (!(led.IsTrue() || led.IsFalse() || led.IsNull())) {
-        std::clog << "LED configuration must be true (always on), false (always off), or null (default).\n";
-    }
-
-    mFirmwareConfig.data[0] =
-        (led.IsNull() ? 0 : CFLAG_NO_ACTIVITY_LED)             |
-        (led.IsTrue() ? CFLAG_LED_CONTROL : 0)                 |
-        (dither.IsFalse() ? CFLAG_NO_DITHERING : 0)            |
-        (interpolate.IsFalse() ? CFLAG_NO_INTERPOLATION : 0)   ;
-
-    writeFirmwareConfiguration();
-}
-
-bool FCDevice::submitTransfer(Transfer *fct)
-{
-    /*
-     * Submit a new USB transfer. The Transfer object is guaranteed to be freed eventually.
-     * On error, it's freed right away.
-     */
-
-    int r = libusb_submit_transfer(fct->transfer);
-
-    if (r < 0) {
-        if (mVerbose && r != LIBUSB_ERROR_PIPE) {
-            std::clog << "Error submitting USB transfer: " << libusb_strerror(libusb_error(r)) << "\n";
-        }
-        delete fct;
-        return false;
-
-    } else {
-        mPending.insert(fct);
-        return true;
-    }
-}
-
-void FCDevice::completeTransfer(libusb_transfer *transfer)
-{
-    FCDevice::Transfer *fct = static_cast<FCDevice::Transfer*>(transfer->user_data);
+    GlimmerDevice::Transfer *fct = static_cast<GlimmerDevice::Transfer*>(transfer->user_data);
     fct->finished = true;
 }
 
-void FCDevice::flush()
+void GlimmerDevice::flush()
 {
     // Erase any finished transfers
 
@@ -226,13 +150,166 @@ void FCDevice::flush()
     }
 
     // Submit new frames, if we had a queued frame waiting
-
     if (mFrameWaitingForSubmit && mNumFramesPending < MAX_FRAMES_PENDING) {
-        writeFramebuffer();
+        writeFrame();
     }
 }
 
-void FCDevice::writeColorCorrection(const Value &color)
+void GlimmerDevice::loadConfiguration(const Value &config)
+{
+    mConfigMap = findConfigMap(config);
+
+    // Initial firmware configuration from our device options
+    parseConfiguration(config);
+    writeConfiguration();
+    clearFrame();
+}
+
+void GlimmerDevice::parseConfiguration(const Value &config)
+{
+    mConfigInitialized = true;
+    mConfigPacket = glimmer::protocol::configPacketDefault;
+    mDebugPacket = glimmer::protocol::debugPacketDefault;
+
+    if (!config.IsObject()) {
+        std::clog << "Configuration is not a JSON object\n";
+        return; // assume default values
+    }
+
+    // Strips
+    const Value &strips = config["strips"];
+    if (strips.IsUint() && strips.GetUint() >= 1 && strips.GetUint() <= 8) {
+        mConfigPacket.ledStrips = strips.GetUint();
+    } else if (!strips.IsNull()) {
+        std::clog << "Value for 'strips' must be 1 to 8, or null (default).";
+    }
+
+    // Strip Length
+    const Value &stripLength = config["stripLength"];
+    if (stripLength.IsUint() && stripLength.GetUint() >= 1 && stripLength.GetUint() <= 255) {
+        mConfigPacket.ledsPerStrip = stripLength.GetUint();
+    } else if (!stripLength.IsNull()) {
+        std::clog << "Value for 'stripLength' must be 1 to 255, or null (default).";
+    }
+
+    // Indicator LED
+    const Value &led = config["led"];
+    if (led.IsBool()) {
+        mConfigPacket.indicatorMode = led.IsTrue() ? glimmer::protocol::IndicatorMode::ON :
+                glimmer::protocol::IndicatorMode::OFF;
+    } else if (!led.IsNull()) {
+        std::clog << "Value for 'led' must be true, false, or null (default).";
+    }
+
+    // Dithering
+    const Value &dither = config["dither"];
+    if (dither.IsBool()) {
+        mConfigPacket.ditherMode = dither.IsTrue() ? glimmer::protocol::DitherMode::TEMPORAL :
+                glimmer::protocol::DitherMode::NONE;
+    } else if (!dither.IsNull()) {
+        std::clog << "Value for 'dither' must be true, false, or null (default).";
+    }
+    const Value &ditherBits = config["ditherBits"];
+    if (ditherBits.IsUint() && ditherBits.GetUint() <= 8) {
+        mConfigPacket.maxDitherBits = ditherBits.GetUint();
+    } else if (!ditherBits.IsNull()) {
+        std::clog << "Value for 'ditherBits' must be 0 to 8, or null (default).";
+    }
+
+    // Interpolation
+    const Value &interpolate = config["interpolate"];
+    if (interpolate.IsBool()) {
+        mConfigPacket.interpolateMode = interpolate.IsTrue() ? glimmer::protocol::InterpolateMode::LINEAR :
+                glimmer::protocol::InterpolateMode::NONE;
+    } else if (!interpolate.IsNull()) {
+        std::clog << "Value for 'interpolate' must be true, false, or null (default).";
+    }
+
+    // Color depth
+    const Value &colorDepth = config["colorDepth"];
+    if (colorDepth.IsUint() && colorDepth.GetUint() == 24 || colorDepth.GetUint() == 33) {
+        mConfigPacket.colorFormat = colorDepth.GetUint() == 24 ? glimmer::protocol::ColorFormat::R8G8B8 :
+                glimmer::protocol::ColorFormat::R11G11B11;
+    } else if (!colorDepth.IsNull()) {
+        std::clog << "Value for 'colorDepth' must be 24 or 33, or null (default).";
+    }
+
+    // Check frame dimensions.
+    for (;;) {
+        mConfigFramePixelCount = static_cast<size_t>(mConfigPacket.ledStrips) * mConfigPacket.ledsPerStrip;
+        mConfigFramePacketCount = glimmer::protocol::packetsPerFrame(
+                mConfigPacket.ledStrips, mConfigPacket.ledsPerStrip, mConfigPacket.colorFormat);
+        if (mConfigFramePacketCount <= glimmer::protocol::maxPacketsPerFrame) break;
+
+        std::clog << "Product of 'strips' and 'stripLength' is too big, frame can have no more than "
+                << glimmer::protocol::pixelsPerPacket(mConfigPacket.colorFormat) * glimmer::protocol::maxPacketsPerFrame
+                << " pixels at the configured color depth.";
+        mConfigPacket.ledStrips = glimmer::protocol::configPacketDefault.ledStrips;
+        mConfigPacket.ledsPerStrip = glimmer::protocol::configPacketDefault.ledsPerStrip;
+    }
+
+    // Timings
+    const Value &timings = config["timings"];
+    if (timings.IsString() && glimmer::led::timingsByName(timings.GetString())) {
+        mConfigPacket.timings = *glimmer::led::timingsByName(timings.GetString());
+    } else if (timings.IsArray() && timings.Size() == 4 &&
+            timings[0u].IsUint() && timings[1u].IsUint() &&
+            timings[2u].IsUint() && timings[3u].IsUint()) {
+        mConfigPacket.timings = glimmer::led::Timings {
+            timings[0u].GetUint(), timings[1u].GetUint(),
+            timings[2u].GetUint(), timings[3u].GetUint()
+        };
+    } else if (!timings.IsNull()) {
+        std::clog << "Value for 'timings' must be one of [";
+        for (const auto& elem : glimmer::led::namedTimings) {
+            std::clog << '"' << elem.name << '"';
+        }
+        std::clog << "], an array of 4 integers, or null (default).";
+    }
+
+    // Debugging options.
+    const Value& debug = config["debug"];
+    if (debug.IsObject()) {
+        const Value& printStats = debug["printStats"];
+        if (printStats.IsBool()) {
+            mDebugPacket.printStats = printStats.IsTrue();
+        } else if (!printStats.IsNull()) {
+            std::clog << "Value for 'printStats' must be true, false, or null (default).";
+        }
+    }
+}
+
+void GlimmerDevice::writeConfiguration()
+{
+    if (mConfigInitialized) {
+        submitTransfer(new Transfer(this, &mConfigPacket, sizeof(mConfigPacket)));
+        submitTransfer(new Transfer(this, &mDebugPacket, sizeof(mDebugPacket)));
+    }
+}
+
+bool GlimmerDevice::submitTransfer(Transfer *fct)
+{
+    /*
+     * Submit a new USB transfer. The Transfer object is guaranteed to be freed eventually.
+     * On error, it's freed right away.
+     */
+
+    int r = libusb_submit_transfer(fct->transfer);
+
+    if (r < 0) {
+        if (mVerbose && r != LIBUSB_ERROR_PIPE) {
+            std::clog << "Error submitting USB transfer: " << libusb_strerror(libusb_error(r)) << "\n";
+        }
+        delete fct;
+        return false;
+
+    } else {
+        mPending.insert(fct);
+        return true;
+    }
+}
+
+void GlimmerDevice::writeColorCorrection(const Value &color)
 {
     /*
      * Populate the color correction table based on a JSON configuration object,
@@ -304,15 +381,11 @@ void FCDevice::writeColorCorrection(const Value &color)
     }
 
     /*
-     * Calculate the color LUT, stowing the result in an array of USB packets.
+     * Calculate the color LUT, setting the result aside for color mapping.
      */
 
-    Packet *packet = mColorLUT;
-    const unsigned firstByteOffset = 1;  // Skip padding byte
-    unsigned byteOffset = firstByteOffset;
-
     for (unsigned channel = 0; channel < 3; channel++) {
-        for (unsigned entry = 0; entry < LUT_ENTRIES; entry++) {
+        for (unsigned entry = 0; entry < 257; entry++) {
             double output;
 
             /*
@@ -343,23 +416,21 @@ void FCDevice::writeColorCorrection(const Value &color)
 
             // Round to the nearest integer, and clamp. Overflow-safe.
             int64_t longValue = (output * 0xFFFF) + 0.5;
-            int intValue = std::max<int64_t>(0, std::min<int64_t>(0xFFFF, longValue));
-
-            // Store LUT entry, little-endian order.
-            packet->data[byteOffset++] = uint8_t(intValue);
-            packet->data[byteOffset++] = uint8_t(intValue >> 8);
-            if (byteOffset >= sizeof packet->data) {
-                byteOffset = firstByteOffset;
-                packet++;
-            }
+            std::clog << longValue << std::endl;
+            mColorMap[channel][entry] = std::max<int64_t>(0, std::min<int64_t>(0xFFFF, longValue));
         }
     }
-
-    // Start asynchronously sending the LUT.
-    submitTransfer(new Transfer(this, &mColorLUT, sizeof mColorLUT));
+    mColorMapInitialized = true;
 }
 
-void FCDevice::writeFramebuffer()
+void GlimmerDevice::clearFrame() {
+    memset(&mFramePackets, 0, sizeof(mFramePackets));
+    for (uint8_t i = 0; i < mConfigFramePacketCount; ++i) {
+        mFramePackets[i].index = i;
+    }
+}
+
+void GlimmerDevice::writeFrame()
 {
     /*
      * Asynchronously write the current framebuffer.
@@ -369,19 +440,22 @@ void FCDevice::writeFramebuffer()
      *       flow control so that the client can produce frames slower.
      */
 
+    if (!mConfigInitialized) return;
+
     if (mNumFramesPending >= MAX_FRAMES_PENDING) {
         // Too many outstanding frames. Wait to submit until a previous frame completes.
         mFrameWaitingForSubmit = true;
         return;
     }
 
-    if (submitTransfer(new Transfer(this, &mFramebuffer, sizeof mFramebuffer, FRAME))) {
+    if (submitTransfer(new Transfer(this, &mFramePackets,
+            mConfigFramePacketCount * sizeof(mFramePackets[0]), FRAME))) {
         mFrameWaitingForSubmit = false;
         mNumFramesPending++;
     }
 }
 
-void FCDevice::writeMessage(Document &msg)
+void GlimmerDevice::writeMessage(Document &msg)
 {
     /*
      * Dispatch a device-specific JSON command.
@@ -400,7 +474,9 @@ void FCDevice::writeMessage(Document &msg)
          *       loadConfiguration() and it shouldn't be device-specific,
          *       but for now most of fcserver assumes the configuration is static.
          */
-        writeFirmwareConfiguration(msg["options"]);
+        parseConfiguration(msg["options"]);
+        writeConfiguration();
+        clearFrame();
         return;
     }
 
@@ -414,43 +490,40 @@ void FCDevice::writeMessage(Document &msg)
     USBDevice::writeMessage(msg);
 }
 
-void FCDevice::writeDevicePixels(Document &msg)
+void GlimmerDevice::writeDevicePixels(Document &msg)
 {
     /*
      * Write pixels without mapping, from a JSON integer
      * array in msg["pixels"]. The pixel array is removed from
      * the reply to save network bandwidth.
      *
-     * Pixel values are clamped to [0, 255], for convenience.
+     * Color components are clamped based on the configured color depth:
+     *   24-bits: [0, 255]
+     *   33-bits: [0, 1023]
      */
+
+    if (!mConfigInitialized) return;
 
     const Value &pixels = msg["pixels"];
     if (!pixels.IsArray()) {
         msg.AddMember("error", "Pixel array is missing", msg.GetAllocator());
     } else {
-
-        // Truncate to the framebuffer size, and only deal in whole pixels.
-        int numPixels = pixels.Size() / 3;
-        if (numPixels > NUM_PIXELS)
-            numPixels = NUM_PIXELS;
-
-        for (int i = 0; i < numPixels; i++) {
-            uint8_t *out = fbPixel(i);
-
-            const Value &r = pixels[i*3 + 0];
-            const Value &g = pixels[i*3 + 1];
-            const Value &b = pixels[i*3 + 2];
-
-            out[0] = std::max(0, std::min(255, r.IsInt() ? r.GetInt() : 0));
-            out[1] = std::max(0, std::min(255, g.IsInt() ? g.GetInt() : 0));
-            out[2] = std::max(0, std::min(255, b.IsInt() ? b.GetInt() : 0));
+        size_t numPixels = std::min<size_t>(pixels.Size() / 3, mConfigFramePixelCount);
+        for (size_t i = 0; i < numPixels; i++) {
+            const Value &r = pixels[i * 3 + 0];
+            const Value &g = pixels[i * 3 + 1];
+            const Value &b = pixels[i * 3 + 2];
+            writeDevicePixelWithClamping(i,
+                    r.IsInt() ? r.GetInt() : 0,
+                    g.IsInt() ? g.GetInt() : 0,
+                    b.IsInt() ? b.GetInt() : 0);
         }
 
-        writeFramebuffer();
+        writeFrame();
     }
 }
 
-void FCDevice::writeMessage(const OPC::Message &msg)
+void GlimmerDevice::writeMessage(const OPC::Message &msg)
 {
     /*
      * Dispatch an incoming OPC command
@@ -460,7 +533,7 @@ void FCDevice::writeMessage(const OPC::Message &msg)
 
         case OPC::SetPixelColors:
             opcSetPixelColors(msg);
-            writeFramebuffer();
+            writeFrame();
             return;
 
         case OPC::SystemExclusive:
@@ -473,7 +546,7 @@ void FCDevice::writeMessage(const OPC::Message &msg)
     }
 }
 
-void FCDevice::opcSysEx(const OPC::Message &msg)
+void GlimmerDevice::opcSysEx(const OPC::Message &msg)
 {
     if (msg.length() < 4) {
         if (mVerbose) {
@@ -500,14 +573,14 @@ void FCDevice::opcSysEx(const OPC::Message &msg)
     // Quietly ignore unhandled SysEx messages.
 }
 
-void FCDevice::opcSetPixelColors(const OPC::Message &msg)
+void GlimmerDevice::opcSetPixelColors(const OPC::Message &msg)
 {
     /*
      * Parse through our device's mapping, and store any relevant portions of 'msg'
      * in the framebuffer.
      */
 
-    if (!mConfigMap) {
+    if (!mConfigMap || !mConfigInitialized || !mColorMapInitialized) {
         // No mapping defined yet. This device is inactive.
         return;
     }
@@ -518,7 +591,7 @@ void FCDevice::opcSetPixelColors(const OPC::Message &msg)
     }
 }
 
-void FCDevice::opcMapPixelColors(const OPC::Message &msg, const Value &inst)
+void GlimmerDevice::opcMapPixelColors(const OPC::Message &msg, const Value &inst)
 {
     /*
      * Parse one JSON mapping instruction, and copy any relevant parts of 'msg'
@@ -559,20 +632,17 @@ void FCDevice::opcMapPixelColors(const OPC::Message &msg, const Value &inst)
 
             // Clamping, overflow-safe
             firstOPC = std::min<unsigned>(firstOPC, msgPixelCount);
-            firstOut = std::min<unsigned>(firstOut, unsigned(NUM_PIXELS));
+            firstOut = std::min<unsigned>(firstOut, mConfigFramePixelCount);
             count = std::min<unsigned>(count, msgPixelCount - firstOPC);
             count = std::min<unsigned>(count,
-                    direction > 0 ? NUM_PIXELS - firstOut : firstOut + 1);
+                    direction > 0 ? mConfigFramePixelCount - firstOut : firstOut + 1);
 
             // Copy pixels
             const uint8_t *inPtr = msg.data + (firstOPC * 3);
             unsigned outIndex = firstOut;
             while (count--) {
-                uint8_t *outPtr = fbPixel(outIndex);
+                writeColorMappedPixel(outIndex, inPtr[0], inPtr[1], inPtr[2]);
                 outIndex += direction;
-                outPtr[0] = inPtr[0];
-                outPtr[1] = inPtr[1];
-                outPtr[2] = inPtr[2];
                 inPtr += 3;
             }
 
@@ -612,26 +682,26 @@ void FCDevice::opcMapPixelColors(const OPC::Message &msg, const Value &inst)
 
             // Clamping, overflow-safe
             firstOPC = std::min<unsigned>(firstOPC, msgPixelCount);
-            firstOut = std::min<unsigned>(firstOut, unsigned(NUM_PIXELS));
+            firstOut = std::min<unsigned>(firstOut, mConfigFramePixelCount);
             count = std::min<unsigned>(count, msgPixelCount - firstOPC);
             count = std::min<unsigned>(count,
-                    direction > 0 ? NUM_PIXELS - firstOut : firstOut + 1);
+                    direction > 0 ? mConfigFramePixelCount - firstOut : firstOut + 1);
 
             // Copy pixels
             const uint8_t *inPtr = msg.data + (firstOPC * 3);
             unsigned outIndex = firstOut;
             bool success = true;
+            uint8_t color[3] = {};
             while (count--) {
-                uint8_t *outPtr = fbPixel(outIndex);
-                outIndex += direction;
-
                 for (int channel = 0; channel < 3; channel++) {
-                    if (!OPC::pickColorChannel(outPtr[channel], colorChannels[channel], inPtr)) {
+                    if (!OPC::pickColorChannel(color[channel], colorChannels[channel], inPtr)) {
                         success = false;
                         break;
                     }
                 }
 
+                writeColorMappedPixel(outIndex, color[0], color[1], color[2]);
+                outIndex += direction;
                 inPtr += 3;
             }
 
@@ -650,7 +720,7 @@ void FCDevice::opcMapPixelColors(const OPC::Message &msg, const Value &inst)
     }
 }
 
-void FCDevice::opcSetGlobalColorCorrection(const OPC::Message &msg)
+void GlimmerDevice::opcSetGlobalColorCorrection(const OPC::Message &msg)
 {
     /*
      * Parse the message as JSON text, and if successful, write new
@@ -679,33 +749,24 @@ void FCDevice::opcSetGlobalColorCorrection(const OPC::Message &msg)
     writeColorCorrection(doc);
 }
 
-void FCDevice::opcSetFirmwareConfiguration(const OPC::Message &msg)
+void GlimmerDevice::opcSetFirmwareConfiguration(const OPC::Message &msg)
 {
-    /*
-     * Raw firmware configuration packet
-     */
-
-    memcpy(mFirmwareConfig.data, msg.data + 4, std::min<size_t>(sizeof mFirmwareConfig.data, msg.length() - 4));
-    writeFirmwareConfiguration();
+    // We longer support writing raw firmware configuration packets.
+    // TODO: If this is in common usage, we could still parse the message and add
+    //       backwards compatibility logic to produce similar effects.
 }
 
-void FCDevice::writeFirmwareConfiguration()
-{
-    // Write mFirmwareConfig to the device
-    submitTransfer(new Transfer(this, &mFirmwareConfig, sizeof mFirmwareConfig));
-}
-
-std::string FCDevice::getName()
+std::string GlimmerDevice::getName()
 {
     std::ostringstream s;
-    s << "Fadecandy";
+    s << "Glimmer";
     if (mSerialString[0]) {
         s << " (Serial# " << mSerialString << ", Version " << mVersionString << ")";
     }
     return s.str();
 }
 
-void FCDevice::describe(rapidjson::Value &object, Allocator &alloc)
+void GlimmerDevice::describe(rapidjson::Value &object, Allocator &alloc)
 {
     USBDevice::describe(object, alloc);
     object.AddMember("version", mVersionString, alloc);

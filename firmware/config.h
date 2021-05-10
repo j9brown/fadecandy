@@ -64,9 +64,9 @@
 
 // List of tags for the renderers to compile into the firmware.
 #define CONFIG_RENDERER(fmt, ditherMode, interpolateMode) \
-        render::RendererTag<render::ColorFormat::fmt, \
-                render::DitherMode::ditherMode, \
-                render::InterpolateMode::interpolateMode>
+        ::glimmer::render::RendererTag<::glimmer::render::ColorFormat::fmt, \
+                ::glimmer::render::DitherMode::ditherMode, \
+                ::glimmer::render::InterpolateMode::interpolateMode>
 #define CONFIG_RENDERERS \
         CONFIG_RENDERER(R8G8B8, NONE, NONE), \
         CONFIG_RENDERER(R8G8B8, TEMPORAL, NONE), \
@@ -96,8 +96,8 @@
 // USB descriptor information
 #define CONFIG_VENDOR_ID               0x1d50    // OpenMoko
 #define CONFIG_PRODUCT_ID              0x607a    // Assigned to Fadecandy project
-#define CONFIG_DEVICE_VER              0x0200	  // BCD device version
-#define CONFIG_DEVICE_VER_STRING		"2.00"
+#define CONFIG_DEVICE_VER              0x0390	  // BCD device version
+#define CONFIG_DEVICE_VER_STRING       "3.90"
 #define CONFIG_MANUFACTURER_NAME         {'s','c','a','n','l','i','m','e'}
 #define CONFIG_MANUFACTURER_NAME_LEN     8
 #define CONFIG_PRODUCT_NAME              {'F','a','d','e','c','a','n','d','y'}
@@ -106,12 +106,12 @@
 #define CONFIG_DFU_NAME_LEN              20
 
 #ifdef __cplusplus
-namespace config {
+namespace glimmer::config {
 
 constexpr size_t maxFrameBuffers = CONFIG_MAX_FRAME_BUFFERS;
 constexpr size_t maxPacketsPerDoubleBufferedFrame = CONFIG_MAX_PACKETS_PER_DOUBLE_BUFFERED_FRAME;
 constexpr size_t maxPacketsPerTripleBufferedFrame = CONFIG_MAX_PACKETS_PER_TRIPLE_BUFFERED_FRAME;
 constexpr size_t maxLedsPerStrip = CONFIG_MAX_LEDS_PER_STRIP;
 
-} // config
+} // glimmer::config
 #endif

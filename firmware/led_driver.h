@@ -35,19 +35,28 @@
 
 #include <utility>
 
-namespace led {
+#include "glimmer/led_timings.h"
+
+namespace glimmer::led {
 
 // Computes the size of buffer required to write up to 8 strips of given length in parallel.
 constexpr size_t bufferSize(size_t ledsPerStrip) { return ledsPerStrip * 24; }
 
 // Initialize the GPIOs and DMA for LED output.
-void init(size_t ledsPerStrip);
+// May be called multiple times to reinitialize the array if the configuration changes.
+// Blocks until all prior writes have completed.
+// Returns true if successful, false if the parameters are invalid.
+bool init(size_t ledsPerStrip, const Timings& timings);
 
 // Writes a buffer of encoded LED data to the DMA engine.
 // This operation completes asynchronously. Subsequent writes will block
-// until all prior writes have completed.
+// until all prior writes have completed and the LEDs are ready to receive
+// new data.
 void write(const uint8_t* buffer);
 
+// Pushes pixels into a DMA buffer.
+// For SK6812, WS2812, WS2811, and similar strips, the input is an array of
+// 24-bit GRB values and the output is 24 bytes or swizzled pixeliness.
 template <size_t ledStrips>
 void pushPixels(uint32_t*& out, const uint32_t pixels[ledStrips]) {
     uint32_t o0 = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0, o5 = 0;
@@ -138,4 +147,4 @@ void updateBuffer(uint8_t* buffer, size_t ledStrips, size_t ledsPerStrip, Sample
     }
 }
 
-} // namespace led
+} // namespace glimmer::led

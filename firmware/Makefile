@@ -37,7 +37,7 @@ CPP_FILES = \
 	time.cpp
 
 # Headers
-INCLUDES = -I.
+INCLUDES = -I. -I../common
 
 # CPPFLAGS = compiler options for C and C++
 CPPFLAGS = -Werror -Wall -Wno-sign-compare -Wno-strict-aliasing \

@@ -33,6 +33,7 @@
 #include "arm/arm_math.h"
 #include "config.h"
 #include "debug.h"
+#include "glimmer/protocol.h"
 #include "hw/mk20dx128.h"
 #include "hw/HardwareSerial.h"
 #include "hw/pins_arduino.h"
@@ -44,140 +45,246 @@
 
 void operator delete(void*, size_t) {}
 
-namespace app {
+namespace glimmer {
 
-// Double-buffered DMA memory for raw bit planes of output
+// Double-buffered DMA memory for raw bit planes of output.
 using OutputBuffer = uint8_t[led::bufferSize(CONFIG_MAX_LEDS_PER_STRIP)];
 __attribute__ ((section(".dmabuffers"), used))
 OutputBuffer outputBuffers[2];
-uint8_t* frontOutputBuffer = outputBuffers[0];
-uint8_t* backOutputBuffer = outputBuffers[1];
+FLEXRAM_DATA uint8_t* frontOutputBuffer;
+FLEXRAM_DATA uint8_t* backOutputBuffer;
 
 // The renderer for presenting incoming frames.
 FLEXRAM_DATA std::aligned_union_t<0, render::RendererHolder> rendererHolderStorage;
-render::RendererHolder* rendererHolder;
+FLEXRAM_DATA render::RendererHolder* rendererHolder;
 
-// Configuration flags remotely set by the host.
-volatile uint8_t configFlags = 0;
+// Parameters provided by the host.
+// These are set in an IRQ context so they need to be synchronized.
+FLEXRAM_DATA protocol::ConfigPacket irqConfigPacket;
+FLEXRAM_DATA volatile bool irqConfigChangedSinceLastLoop;
+FLEXRAM_DATA protocol::DebugPacket irqDebugPacket;
+FLEXRAM_DATA volatile bool irqDebugChangedSinceLastLoop;
 
 // Set to true if any USB packets were handled since the last loop iteration.
 // Used to show activity on the bus.
-volatile bool handledUsbPacketsSinceLastLoop = false;
+FLEXRAM_DATA volatile bool irqHandledUsbPacketsSinceLastLoop;
 
-// Set to true if there's a new frame buffer pending swap.
-volatile bool receivedNewFrameBufferSinceLastLoop = false;
+// Set to true if there's a new frame pending swap.
+FLEXRAM_DATA volatile bool irqReceivedNewFrameSinceLastLoop;
 
-// USB protocol definitions
-constexpr uint8_t PACKET_HEADER_CONTROL_MASK = 0x80;
-constexpr uint8_t PACKET_HEADER_INDEX_MASK = 0x7f;
-constexpr uint8_t PACKET_CONTROL_CONFIG = PACKET_HEADER_CONTROL_MASK | 0x00;
+// Copies of parameters needed in the main loop.
+FLEXRAM_DATA protocol::IndicatorMode paramIndicatorMode;
+FLEXRAM_DATA bool paramPrintStats;
 
-// Configuration flags set by the host.
-constexpr uint8_t CFLAG_NO_DITHERING      = (1 << 0);
-// constexpr uint8_t CFLAG_NO_INTERPOLATION  = (1 << 1);
-constexpr uint8_t CFLAG_NO_ACTIVITY_LED   = (1 << 2);
-constexpr uint8_t CFLAG_LED_CONTROL       = (1 << 3);
+// Statistics for debugging.
+struct Stats {
+    uint64_t startTime;
+    uint32_t receivedFrameCount;
+    uint32_t renderedFrameCount;
+};
+FLEXRAM_DATA Stats stats;
 
 // Called from an interrupt context so we need to take care with synchronization.
 // Must either take ownership of the packet or free it.
 // Unrecognized packets are ignored to support protocol expansion.
 bool handleUsbRxIrq(usb_packet_t* packet, size_t len) {
-    const uint8_t header = packet->buf[0];
-    if (header & PACKET_HEADER_CONTROL_MASK) {
+    // Zero out the tail of the packet to simplify validation and to avoid
+    // accidentally processing uninitialized data as the protocol evolves.
+    // In practice this has a negligible effect on performance since all but
+    // the last frame packet is 64 bytes.
+    for (size_t i = len; i < sizeof(packet->buf); i++)
+        packet->buf[i] = 0;
+
+    const protocol::PacketType header = static_cast<protocol::PacketType>(packet->buf[0]);
+    if (protocol::isControlPacket(header)) {
         // Handle control requests.
         switch (header) {
-            case PACKET_CONTROL_CONFIG:
-                configFlags = packet->buf[1];
+            case protocol::PacketType::config:
+                if (irqConfigChangedSinceLastLoop) return false; // defer packet
+                memcpy(&irqConfigPacket, packet->buf, sizeof(irqConfigPacket));
+                irqConfigChangedSinceLastLoop = true;
+                break;
+            case protocol::PacketType::debug:
+                if (irqDebugChangedSinceLastLoop) return false; // defer packet
+                memcpy(&irqDebugPacket, packet->buf, sizeof(irqDebugPacket));
+                irqDebugChangedSinceLastLoop = true;
                 break;
         }
         usb_free(packet);
     } else {
         // Handle frame buffer image data.
-        const uint8_t index = header & PACKET_HEADER_INDEX_MASK;
-
-        // Framebuffer updates are synchronized; don't accept any packets until
-        // a new frame is swapped in.
-        if (receivedNewFrameBufferSinceLastLoop) return false;
-
+        if (irqReceivedNewFrameSinceLastLoop) return false; // defer packet
         // Take ownership of the packet.
-        if (rendererHolder->get()->storeFramePacket(index, packet, len)) {
-            receivedNewFrameBufferSinceLastLoop = true;
+        if (rendererHolder->get()->storeFramePacket(static_cast<uint8_t>(header), packet, len)) {
+            irqReceivedNewFrameSinceLastLoop = true;
         }
     }
 
-    handledUsbPacketsSinceLastLoop = true;
+    irqHandledUsbPacketsSinceLastLoop = true;
     return true;
 }
 
-void configure(render::RendererId id, render::RendererOptions options) {
-    if (rendererHolder->init(id, std::move(options))) {
-        led::init(options.ledsPerStrip);
-    } else {
-        serial_print("config failed!\r\n");
+void dumpBool(const char* label, bool value) {
+    serial_print("- ");
+    serial_print(label);
+    serial_print(": ");
+    serial_print(value ? "true" : "false");
+    serial_print("\r\n");
+}
+
+void dumpUnsigned(const char* label, unsigned value) {
+    serial_print("- ");
+    serial_print(label);
+    serial_print(": ");
+    serial_pdec32(value);
+    serial_print("\r\n");
+}
+
+void dumpConfigPacket(const protocol::ConfigPacket& p) {
+    serial_print("config packet:\r\n");
+    dumpUnsigned("ledStrips", p.ledStrips);
+    dumpUnsigned("ledsPerStrip", p.ledsPerStrip);
+    dumpUnsigned("maxDitherBits", p.maxDitherBits);
+    dumpUnsigned("colorFormat", static_cast<unsigned>(p.colorFormat));
+    dumpUnsigned("ditherMode", static_cast<unsigned>(p.ditherMode));
+    dumpUnsigned("interpolateMode", static_cast<unsigned>(p.interpolateMode));
+    dumpUnsigned("indicatorMode", static_cast<unsigned>(p.indicatorMode));
+    dumpUnsigned("timings.frequency", p.timings.frequency);
+    dumpUnsigned("timings.resetInterval", p.timings.resetInterval);
+    dumpUnsigned("timings.t0h", p.timings.t0h);
+    dumpUnsigned("timings.t1h", p.timings.t1h);
+}
+
+void dumpDebugPacket(const protocol::DebugPacket& p) {
+    serial_print("debug packet:\r\n");
+    dumpBool("printStats", p.printStats);
+}
+
+void configure(render::RendererId id, render::RendererOptions options, const led::Timings& timings) {
+    if (!rendererHolder->init(id, std::move(options))) {
+        serial_print("invalid configuration: can't init renderer\r\n");
+        return;
+    }
+    if (!led::init(options.ledsPerStrip, timings)) {
+        rendererHolder->clear();
+        serial_print("invalid configuration: can't init led driver\r\n");
     }
 }
 
 void setup() {
     // Announce firmware version
     serial_begin(BAUD2DIV(115200));
-    serial_print("Fadecandy v" CONFIG_DEVICE_VER_STRING "\r\n");
+    serial_print("\r\nGlimmer v" CONFIG_DEVICE_VER_STRING "\r\n");
 
     // Configure peripherals.
     pinMode(LED_BUILTIN, OUTPUT);
 
+    // Initialize globals and default parameters.
+    frontOutputBuffer = outputBuffers[0];
+    backOutputBuffer = outputBuffers[1];
     rendererHolder = new (&rendererHolderStorage) render::RendererHolder();
-    configure(
-            render::RendererId{render::ColorFormat::R8G8B8, render::DitherMode::TEMPORAL, render::InterpolateMode::LINEAR},
-            render::RendererOptions{6, 120, 3});
+    irqConfigChangedSinceLastLoop = false;
+    irqDebugChangedSinceLastLoop = false;
+    irqHandledUsbPacketsSinceLastLoop = false;
+    irqReceivedNewFrameSinceLastLoop = false;
+    paramIndicatorMode = protocol::IndicatorMode::ACTIVITY;
+    paramPrintStats = false;
+    stats = {};
 }
 
-uint64_t measureStart = 0;
-uint32_t measureFrames = 0;
-
 void loop() {
-    const uint8_t currentFlags = configFlags;
-
     // Render the next output buffer and write it out using DMA.
-    rendererHolder->get()->render(backOutputBuffer);
-    std::swap(frontOutputBuffer, backOutputBuffer);
-    led::write(frontOutputBuffer);
+    if (rendererHolder->get()->render(backOutputBuffer)) {
+        std::swap(frontOutputBuffer, backOutputBuffer);
+        led::write(frontOutputBuffer);
 
-    // Synchronize with the interrupt handler and flip buffers if a new frame was received.
-    if (receivedNewFrameBufferSinceLastLoop) {
-        rendererHolder->get()->advanceFrame();
-        receivedNewFrameBufferSinceLastLoop = false;
-        perf_receivedKeyframeCounter++;
-        usb_rx_resume();
+        stats.renderedFrameCount++;
     }
+
+    // Synchronize with the interrupt handler.
+    // Flip buffers if a new frame was received.
+    bool needUsbResume = false;
+    if (irqReceivedNewFrameSinceLastLoop) {
+        rendererHolder->get()->advanceFrame();
+
+        irqReceivedNewFrameSinceLastLoop = false;
+        stats.receivedFrameCount++;
+        perf_receivedKeyframeCounter++;
+        needUsbResume = true;
+    }
+
+    // Handle new debug settings.
+    if (irqDebugChangedSinceLastLoop) {
+        dumpDebugPacket(irqDebugPacket);
+
+        paramPrintStats = irqDebugPacket.printStats;
+
+        irqDebugChangedSinceLastLoop = false;
+        needUsbResume = true;
+    }
+
+    // Handle new configuration settings.
+    if (irqConfigChangedSinceLastLoop) {
+        dumpConfigPacket(irqConfigPacket);
+
+        paramIndicatorMode = irqConfigPacket.indicatorMode;
+        render::RendererId id = {
+            irqConfigPacket.colorFormat,
+            irqConfigPacket.ditherMode,
+            irqConfigPacket.interpolateMode
+        };
+        render::RendererOptions options = {
+            irqConfigPacket.ledStrips,
+            irqConfigPacket.ledsPerStrip,
+            irqConfigPacket.maxDitherBits
+        };
+
+        configure(std::move(id), std::move(options), irqConfigPacket.timings);
+        irqConfigChangedSinceLastLoop = false;
+        needUsbResume = true;
+    }
+
+    if (needUsbResume) usb_rx_resume();
 
     // Update the activity LED activity.
-    if (currentFlags & CFLAG_NO_ACTIVITY_LED) {
-        // LED under manual control
-        digitalWriteFast(LED_BUILTIN, currentFlags & CFLAG_LED_CONTROL);
-    } else {
-        // Use the built-in LED as a USB activity indicator.
-        digitalWriteFast(LED_BUILTIN, handledUsbPacketsSinceLastLoop);
-        handledUsbPacketsSinceLastLoop = false;
+    switch (paramIndicatorMode) {
+        case protocol::IndicatorMode::OFF:
+            digitalWriteFast(LED_BUILTIN, false);
+            break;
+        case protocol::IndicatorMode::ON:
+            digitalWriteFast(LED_BUILTIN, true);
+            break;
+        case protocol::IndicatorMode::ACTIVITY:
+        default:
+            digitalWriteFast(LED_BUILTIN, irqHandledUsbPacketsSinceLastLoop);
+            break;
     }
+    irqHandledUsbPacketsSinceLastLoop = false;
 
     // Performance counter, for monitoring frame rate externally
     perf_frameCounter++;
 
+    // Update statistics
     uint64_t now = micros64();
-    measureFrames++;
-    if (now - measureStart > 10000000) {
-        serial_pdec32(measureFrames);
-        serial_print(" per 10 sec\r\n");
-        measureStart = now;
-        measureFrames = 0;
+    if (now - stats.startTime > 10000000) {
+        if (paramPrintStats) {
+            serial_print("frames received: ");
+            serial_pdec32(stats.receivedFrameCount);
+            serial_print(", frames rendered: ");
+            serial_pdec32(stats.renderedFrameCount);
+            serial_print(" (during last 10 seconds)\r\n");
+        }
+        stats.startTime = now;
+        stats.receivedFrameCount = 0;
+        stats.renderedFrameCount = 0;
     }
 }
 
-} // namespace app
+} // namespace glimmer
 
 // USB packet interrupt handler. Invoked by the ISR dispatch code in usb_dev.c
 extern "C" int usb_rx_handler(usb_packet_t *packet, size_t len) {
-    return app::handleUsbRxIrq(packet, len);
+    return glimmer::handleUsbRxIrq(packet, len);
 }
 
 // Reserved RAM area for signalling entry to bootloader
@@ -187,10 +294,10 @@ extern "C" int main() {
     initSysticks();
 
     // Run application until asked to reboot into the bootloader
-    app::setup();
+    glimmer::setup();
     while (usb_dfu_state == DFU_appIDLE) {
         watchdog_refresh();
-        app::loop();
+        glimmer::loop();
     }
 
     // Reboot to the Fadecandy Bootloader
