@@ -8,7 +8,7 @@ numLEDs = 512
 client = opc.Client('localhost:7890')
 
 black = [ (0,0,0) ] * numLEDs
-white = [ (255,255,255) ] * numLEDs
+white = [ (63,63,63) ] * numLEDs
 
 # Fade to white
 client.put_pixels(black)
