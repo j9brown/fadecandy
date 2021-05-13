@@ -392,7 +392,7 @@ void GlimmerDevice::writeColorCorrection(const Value &color)
              * Normalized input value corresponding to this LUT entry.
              * Ranges from 0 to 1.
              */
-            double input = (entry << 8) / 65535.0;
+            double input = entry / 255.0;
 
             // Scale by whitepoint before anything else
             input *= whitepoint[channel];
@@ -413,9 +413,17 @@ void GlimmerDevice::writeColorCorrection(const Value &color)
                 output = linearCutoff + pow(nonlinearInput / scale, gamma) * scale;
             }
 
-            // Round to the nearest integer, and clamp. Overflow-safe.
-            int64_t longValue = (output * 0xFFFF) + 0.5;
-            mColorMap[channel][entry] = std::max<int64_t>(0, std::min<int64_t>(0xFFFF, longValue));
+            // Generate the correct number of bits per color component for the frame buffer
+            // to avoid overflows when dithering.
+            output = std::min(std::max(output, 0.0), 1.0);
+            switch (mConfigPacket.colorFormat) {
+                case glimmer::protocol::ColorFormat::R8G8B8:
+                    mColorMap[channel][entry] = uint16_t(output * 0xff);
+                    break;
+                case glimmer::protocol::ColorFormat::R11G11B11:
+                    mColorMap[channel][entry] = uint16_t(output * 0x7f8);
+                    break;
+            }
         }
     }
     mColorMapInitialized = true;

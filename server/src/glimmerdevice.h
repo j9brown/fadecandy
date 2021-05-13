@@ -84,6 +84,7 @@ private:
     bool mFrameInitialized = false;
     glimmer::protocol::FramePacket mFramePackets[glimmer::protocol::maxPacketsPerFrame];
 
+    // The color map is scaled according to the color depth.
     bool mColorMapInitialized = false;
     uint16_t mColorMap[3][256];
 
@@ -145,10 +146,10 @@ private:
     inline void writeColorMappedPixel(size_t n, unsigned r, unsigned g, unsigned b) {
         switch (mConfigPacket.colorFormat) {
             case glimmer::protocol::ColorFormat::R8G8B8:
-                writeDevicePixel24(n, mColorMap[0][r] >> 8, mColorMap[1][g] >> 8, mColorMap[2][b] >> 8);
+                writeDevicePixel24(n, mColorMap[0][r], mColorMap[1][g], mColorMap[2][b]);
                 break;
             case glimmer::protocol::ColorFormat::R11G11B11:
-                writeDevicePixel33(n, mColorMap[0][r] >> 5, mColorMap[1][g] >> 5, mColorMap[2][b] >> 5);
+                writeDevicePixel33(n, mColorMap[0][r], mColorMap[1][g], mColorMap[2][b]);
                 break;
         }
     }
