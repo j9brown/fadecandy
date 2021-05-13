@@ -113,7 +113,7 @@ private:
         uint32_t* pixel = &reinterpret_cast<uint32_t*>(data + 4)[pixelIndex];
         uint16_t* blues = reinterpret_cast<uint16_t*>(data + 2);
         *pixel = (r << 21) | (g << 10) | (b >> 1);
-        *blues = (*blues & ~(1u << pixelIndex)) | ((b & 1) << pixelIndex);
+        *blues = (*blues & ~(1u << pixelIndex)) | ((b & 1u) << pixelIndex);
     }
 
     inline void writeDevicePixel(size_t n, unsigned r, unsigned g, unsigned b) {

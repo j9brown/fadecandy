@@ -385,13 +385,12 @@ void GlimmerDevice::writeColorCorrection(const Value &color)
      */
 
     for (unsigned channel = 0; channel < 3; channel++) {
-        for (unsigned entry = 0; entry < 257; entry++) {
+        for (unsigned entry = 0; entry < 256; entry++) {
             double output;
 
             /*
              * Normalized input value corresponding to this LUT entry.
-             * Ranges from 0 to slightly higher than 1. (The last LUT entry
-             * can't quite be reached.)
+             * Ranges from 0 to 1.
              */
             double input = (entry << 8) / 65535.0;
 
@@ -416,7 +415,6 @@ void GlimmerDevice::writeColorCorrection(const Value &color)
 
             // Round to the nearest integer, and clamp. Overflow-safe.
             int64_t longValue = (output * 0xFFFF) + 0.5;
-            std::clog << longValue << std::endl;
             mColorMap[channel][entry] = std::max<int64_t>(0, std::min<int64_t>(0xFFFF, longValue));
         }
     }
